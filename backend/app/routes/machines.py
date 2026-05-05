@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, status, WebSocket, WebSocketDisconnect, Body
+from fastapi import APIRouter, Depends, status, WebSocket, WebSocketDisconnect, Body, HTTPException
 from typing import Dict, Any
 import asyncio
 import json
+import os
 from uuid import uuid4
 
 from app.core.dependencies import get_current_user
@@ -16,9 +17,112 @@ import html
 
 router = APIRouter(prefix="/machines", tags=["machines"])
 
-# In-memory connection manager: machine_id -> WebSocket
 _connections: Dict[str, WebSocket] = {}
 _pending_responses: Dict[str, Dict[str, asyncio.Future]] = {}
+_ALLOWED_COMMANDS = {"list", "read"}
+_MAX_READ_BYTES = 50 * 1024 * 1024
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _is_path_allowed(target_path: str, allowed_paths: list[str]) -> bool:
+    target = _normalize_path(target_path)
+    for base in allowed_paths:
+        try:
+            if os.path.commonpath([target, _normalize_path(base)]) == _normalize_path(base):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _resolve_requested_path(requested_path: str | None, allowed_paths: list[str]) -> str:
+    if not allowed_paths:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="machine-policy-not-registered")
+
+    base_path = _normalize_path(allowed_paths[0])
+    if not requested_path or requested_path in (".", "./", ".\\"):
+        return base_path
+    if os.path.isabs(requested_path):
+        return _normalize_path(requested_path)
+    return _normalize_path(os.path.join(base_path, requested_path))
+
+
+def _sanitize_machine_command(machine, payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid-command-payload")
+
+    cmd = payload.get("cmd")
+    if cmd not in _ALLOWED_COMMANDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported-command")
+
+    allowed_paths = list(getattr(machine, "allowed_paths", []) or [])
+    if cmd == "list":
+        requested_path = payload.get("path")
+        path = _resolve_requested_path(requested_path, allowed_paths)
+        if not _is_path_allowed(path, allowed_paths):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="path-not-allowed")
+        return {"cmd": "list", "path": path}
+
+    requested_path = payload.get("path")
+    if not requested_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="path-is-required")
+
+    path = _resolve_requested_path(requested_path, allowed_paths)
+    if not _is_path_allowed(path, allowed_paths):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="path-not-allowed")
+
+    try:
+        max_bytes = int(payload.get("max_bytes", 65536))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid-max-bytes")
+
+    if max_bytes <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid-max-bytes")
+
+    return {"cmd": "read", "path": path, "max_bytes": min(max_bytes, _MAX_READ_BYTES)}
+
+
+async def _accept_machine_websocket(websocket: WebSocket, machine_id: str, record) -> bool:
+    try:
+        first_message = await websocket.receive_text()
+    except WebSocketDisconnect:
+        return False
+
+    try:
+        payload = json.loads(first_message)
+    except Exception:
+        await websocket.close(code=1008)
+        return False
+
+    if not isinstance(payload, dict) or payload.get("type") != "hello":
+        await websocket.close(code=1008)
+        return False
+
+    allowed_paths = payload.get("allowed_paths")
+    if not isinstance(allowed_paths, list):
+        await websocket.close(code=1008)
+        return False
+
+    normalized_allowed_paths = [path.strip() for path in allowed_paths if isinstance(path, str) and path.strip()]
+    if not normalized_allowed_paths:
+        await websocket.close(code=1008)
+        return False
+
+    db = get_database()
+    repo = MongoMachineRepository(db)
+    refreshed = await repo.update_allowed_paths(record.id, normalized_allowed_paths)
+    if refreshed is None:
+        await websocket.close(code=1008)
+        return False
+
+    _connections[machine_id] = websocket
+    _pending_responses.setdefault(machine_id, {})
+    await repo.touch_last_seen(record.id)
+    await websocket.send_text(json.dumps({"ok": True, "type": "hello", "request_id": payload.get("request_id")}))
+    return True
 
 
 async def send_command_to_machine(machine_id: str, payload: dict, timeout: float = 10.0) -> dict:
@@ -36,7 +140,6 @@ async def send_command_to_machine(machine_id: str, payload: dict, timeout: float
     machine_pending[request_id] = future
 
     try:
-        # Send payload and wait for response correlated by request_id
         await ws.send_text(json.dumps(command_payload))
         try:
             return await asyncio.wait_for(future, timeout=timeout)
@@ -79,7 +182,6 @@ async def create_machine(payload: CreateMachineRequest, current_user=Depends(get
         allowed_paths=payload.allowed_paths,
         expires_in_days=payload.expires_in_days,
     )
-    # generate a one-file installer script embedding token and config
     backend_url = settings.backend_public_url
     backend_ws_base = backend_url.rstrip('/')
     if backend_ws_base.startswith("https://"):
@@ -196,6 +298,25 @@ def _resolve_requested_path(requested_path):
     return _normalize(os.path.join(ALLOWED_PATHS[0], requested_path))
 
 
+def _connect_kwargs():
+    headers = [("X-Machine-Token", TOKEN)]
+    try:
+        return {"additional_headers": headers}
+    except TypeError:
+        return {"extra_headers": headers}
+
+
+async def _register_machine(ws):
+    await ws.send(json.dumps({{"type": "hello", "allowed_paths": ALLOWED_PATHS, "request_id": "hello"}}))
+    ack_raw = await ws.recv()
+    try:
+        ack = json.loads(ack_raw)
+    except Exception:
+        ack = {{}}
+    if not ack.get('ok'):
+        raise RuntimeError(ack.get('error', 'registration-failed'))
+
+
 async def run():
     _log('AGENT_START', 'machine_id=%s' % MACHINE_ID)
     _log('WS_CONNECTING', BACKEND_WS)
@@ -203,8 +324,14 @@ async def run():
     _log('INFO', 'Agente em modo continuo. Use Ctrl+C para encerrar.')
 
     try:
-        async with websockets.connect(BACKEND_WS) as ws:
+        try:
+            ws_cm = websockets.connect(BACKEND_WS, **_connect_kwargs())
+        except TypeError:
+            ws_cm = websockets.connect(BACKEND_WS, extra_headers={"X-Machine-Token": TOKEN})
+
+        async with ws_cm as ws:
             _log('WS_CONNECTED')
+            await _register_machine(ws)
             try:
                 async for msg in ws:
                     payload = json.loads(msg)
@@ -263,7 +390,7 @@ if __name__ == '__main__':
         machine_name=html.escape(machine.name),
         machine_id=machine.id,
         raw_token=raw_token,
-        backend_ws=backend_ws_base + f"/api/v1/machines/ws/{machine.id}?token={raw_token}",
+        backend_ws=backend_ws_base + f"/api/v1/machines/ws/{machine.id}",
     )
 
     return MachineCreateResponse(**serialize_machine(machine).model_dump(), token=raw_token, installer_script=installer)
@@ -277,16 +404,12 @@ async def revoke_machine(machine_id: str, current_user=Depends(get_current_user)
 
 
 @router.websocket("/ws/{machine_id}")
-async def machine_ws(websocket: WebSocket, machine_id: str, token: str | None = None):
-    # Accept the connection then validate token
-    await websocket.accept()
-
-    # token expected in query param `token`
+async def machine_ws(websocket: WebSocket, machine_id: str):
+    token = websocket.headers.get("x-machine-token") or websocket.query_params.get("token")
     if token is None:
         await websocket.close(code=1008)
         return
 
-    # validate token
     db = get_database()
     repo = MongoMachineRepository(db)
     token_hash = MachineService.hash_token(token)
@@ -295,10 +418,10 @@ async def machine_ws(websocket: WebSocket, machine_id: str, token: str | None = 
         await websocket.close(code=1008)
         return
 
-    # register connection
-    _connections[machine_id] = websocket
-    _pending_responses.setdefault(machine_id, {})
-    await repo.touch_last_seen(record.id)
+    await websocket.accept()
+
+    if not await _accept_machine_websocket(websocket, machine_id, record):
+        return
 
     try:
         while True:
@@ -306,6 +429,8 @@ async def machine_ws(websocket: WebSocket, machine_id: str, token: str | None = 
             try:
                 payload = json.loads(message)
                 if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "hello":
                     continue
                 req_id = payload.get("request_id")
                 if req_id:
@@ -332,13 +457,15 @@ async def post_command(machine_id: str, payload: dict = Body(...), current_user=
     """
     # ensure ownership
     service = get_machine_service()
-    machine = await service.list_machines(owner_id=current_user.id)
-    # check machine exists for user
-    if not any(m.id == machine_id for m in machine):
-        return {"error": "not-found-or-not-owner"}
+    machine_list = await service.list_machines(owner_id=current_user.id)
+    machine = next((item for item in machine_list if item.id == machine_id), None)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not-found-or-not-owner")
+
+    validated_payload = _sanitize_machine_command(machine, payload)
 
     try:
-        resp = await send_command_to_machine(machine_id, payload)
+        resp = await send_command_to_machine(machine_id, validated_payload)
         return {"ok": True, "result": resp}
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)}

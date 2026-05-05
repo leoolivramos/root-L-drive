@@ -26,3 +26,7 @@ class MachineRepository(ABC):
     @abstractmethod
     async def touch_last_seen(self, machine_id: str) -> None:
         raise NotImplementedError()
+
+    @abstractmethod
+    async def update_allowed_paths(self, machine_id: str, allowed_paths: list[str]) -> MachineEntity | None:
+        raise NotImplementedError()

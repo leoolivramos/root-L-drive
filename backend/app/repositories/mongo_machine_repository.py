@@ -82,3 +82,15 @@ class MongoMachineRepository(MachineRepository):
             {"_id": as_object_id(machine_id)},
             {"$set": {"last_seen": datetime.now(timezone.utc)}},
         )
+
+    async def update_allowed_paths(self, machine_id: str, allowed_paths: list[str]) -> MachineEntity | None:
+        if not is_valid_object_id(machine_id):
+            return None
+
+        normalized_allowed_paths = [path.strip() for path in allowed_paths if isinstance(path, str) and path.strip()]
+        await self.collection.update_one(
+            {"_id": as_object_id(machine_id)},
+            {"$set": {"allowed_paths": normalized_allowed_paths}},
+        )
+        doc = await self.collection.find_one({"_id": as_object_id(machine_id)})
+        return machine_from_mongo(doc) if doc else None
