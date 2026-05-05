@@ -301,9 +301,9 @@ def _resolve_requested_path(requested_path):
 def _connect_kwargs():
     headers = [("X-Machine-Token", TOKEN)]
     try:
-        return {"additional_headers": headers}
+        return {{"additional_headers": headers}}
     except TypeError:
-        return {"extra_headers": headers}
+        return {{"extra_headers": headers}}
 
 
 async def _register_machine(ws):
@@ -327,7 +327,7 @@ async def run():
         try:
             ws_cm = websockets.connect(BACKEND_WS, **_connect_kwargs())
         except TypeError:
-            ws_cm = websockets.connect(BACKEND_WS, extra_headers={"X-Machine-Token": TOKEN})
+            ws_cm = websockets.connect(BACKEND_WS, extra_headers={{"X-Machine-Token": TOKEN}})
 
         async with ws_cm as ws:
             _log('WS_CONNECTED')
