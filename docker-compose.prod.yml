@@ -1,8 +1,6 @@
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: docker.io/${DOCKER_USER}/private-driver-backend:latest
     container_name: private-drive-backend
     restart: always
     environment:
@@ -54,9 +52,7 @@ services:
         max-file: "3"
 
   celery_worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: docker.io/${DOCKER_USER}/private-driver-backend:latest
     container_name: private-drive-celery-worker
     restart: always
     command: celery -A app.celery_app worker --loglevel=info --pool=solo --queues=documents,images,default --concurrency=2
@@ -99,9 +95,7 @@ services:
         max-file: "3"
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: docker.io/${DOCKER_USER}/private-driver-frontend:latest
     container_name: private-drive-frontend
     restart: always
     environment:
