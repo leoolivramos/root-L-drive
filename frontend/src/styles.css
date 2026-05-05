@@ -1348,6 +1348,24 @@ button.danger {
   background: linear-gradient(135deg, #ba2f34 0%, #cf4a3c 100%);
 }
 
+button:disabled,
+button.ghost:disabled,
+button.danger:disabled {
+  background: #d7deea;
+  color: #7a879b;
+  border-color: #c8d2e1;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+  opacity: 1;
+}
+
+button.danger:disabled {
+  background: #e6d9dc;
+  color: #8f5a61;
+  border-color: #d7b9bf;
+}
+
 .error {
   color: var(--danger);
   margin: 0;

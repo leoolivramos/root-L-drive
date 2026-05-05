@@ -245,7 +245,10 @@ export default function MachinesPage() {
 
                   <div className="row-actions">
                     <button className="ghost" onClick={() => handleList(m.id)}>Listar</button>
-                    <button className="danger" onClick={() => handleRevoke(m.id)}>
+                    <button className="danger"
+                      onClick={() => handleRevoke(m.id)}
+                      disabled={!m.is_active}
+                    >
                       <FaTrash /> Revogar
                     </button>
                   </div>
