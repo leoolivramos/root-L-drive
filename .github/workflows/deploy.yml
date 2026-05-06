@@ -76,7 +76,7 @@ jobs:
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           source: "docker-compose.prod.yml"
-          target: "${{ secrets.DEPLOY_DIRECTORY }}/docker-compose.prod.yml.new"
+          target: "/tmp/.docker-compose.prod.yml.tmp"
 
       - name: Deploy via SSH (with Rollback)
         uses: appleboy/ssh-action@v1.0.0
@@ -119,24 +119,28 @@ jobs:
             DEPLOY_DIR="${{ secrets.DEPLOY_DIRECTORY }}"
             cd "$DEPLOY_DIR"
 
-            echo "[1] Criando backup do docker-compose anterior..."
-            if [ -f docker-compose.prod.yml ]; then
-              cp docker-compose.prod.yml docker-compose.prod.yml.backup
-              echo "✓ Backup criado"
-            fi
-
-            echo ""
-            echo "[2] Substituindo docker-compose.prod.yml com arquivo enviado..."
-            if [ -f docker-compose.prod.yml.new ]; then
-              mv docker-compose.prod.yml.new docker-compose.prod.yml
-              echo "✓ docker-compose.prod.yml atualizado"
-            else
-              echo "❌ ERRO: arquivo docker-compose.prod.yml.new não encontrado no servidor"
+            echo "[1] Validando docker-compose.prod.yml enviado..."
+            if ! docker compose -f /tmp/.docker-compose.prod.yml.tmp config > /dev/null 2>&1; then
+              echo "❌ ERRO: docker-compose.prod.yml inválido!"
+              rm -f /tmp/.docker-compose.prod.yml.tmp
               exit 1
             fi
+            echo "✓ docker-compose.prod.yml válido"
 
             echo ""
-            echo "[3] Validando .env..."
+            echo "[2] Criando backup do docker-compose anterior..."
+            if [ -f docker-compose.prod.yml ]; then
+              cp docker-compose.prod.yml docker-compose.prod.yml.backup
+              echo "✓ Backup criado: docker-compose.prod.yml.backup"
+            fi
+
+            echo ""
+            echo "[3] Atualizando docker-compose.prod.yml..."
+            mv /tmp/.docker-compose.prod.yml.tmp docker-compose.prod.yml
+            echo "✓ docker-compose.prod.yml atualizado com sucesso"
+
+            echo ""
+            echo "[4] Validando .env..."
             if [ ! -f .env ]; then
               echo "ERRO: .env não encontrado no servidor"
               exit 1
@@ -144,23 +148,23 @@ jobs:
             echo "✓ .env encontrado"
 
             echo ""
-            echo "[4] Puxando imagens Docker do Hub..."
+            echo "[5] Puxando imagens Docker do Hub..."
             docker pull ${{ env.IMAGE_BACKEND }}:latest
             docker pull ${{ env.IMAGE_FRONTEND }}:latest
             echo "✓ Imagens puxadas com sucesso"
 
             echo ""
-            echo "[5] Parando containers antigos..."
+            echo "[6] Parando containers antigos..."
             docker compose -f docker-compose.prod.yml down --remove-orphans || true
             echo "✓ Containers parados"
 
             echo ""
-            echo "[6] Iniciando novos containers..."
+            echo "[7] Iniciando novos containers..."
             docker compose -f docker-compose.prod.yml up -d
             echo "✓ Containers iniciados"
 
             echo ""
-            echo "[7] Aguardando serviços ficarem prontos (60s)..."
+            echo "[8] Aguardando serviços ficarem prontos (60s)..."
             WAIT_COUNT=0
             MAX_WAIT=60
             while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
@@ -174,11 +178,11 @@ jobs:
             done
 
             echo ""
-            echo "[8] Verificando status dos containers..."
+            echo "[9] Verificando status dos containers..."
             docker ps --filter "name=private-drive"
 
             echo ""
-            echo "[9] Verificando conectividade da API..."
+            echo "[10] Verificando conectividade da API..."
             API_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/health || echo "000")
             if [ "$API_HEALTH" = "200" ]; then
               echo "✓ API respondendo normalmente (HTTP 200)"
