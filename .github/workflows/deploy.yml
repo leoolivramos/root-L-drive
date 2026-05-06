@@ -76,7 +76,7 @@ jobs:
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           source: "docker-compose.prod.yml"
-          target: "/tmp/.docker-compose.prod.yml.tmp"
+          target: "/tmp"
 
       - name: Deploy via SSH (with Rollback)
         uses: appleboy/ssh-action@v1.0.0
@@ -120,9 +120,9 @@ jobs:
             cd "$DEPLOY_DIR"
 
             echo "[1] Validando docker-compose.prod.yml enviado..."
-            if ! docker compose -f /tmp/.docker-compose.prod.yml.tmp config > /dev/null 2>&1; then
+            if ! docker compose -f /tmp/docker-compose.prod.yml --env-file .env config > /dev/null 2>&1; then
               echo "❌ ERRO: docker-compose.prod.yml inválido!"
-              rm -f /tmp/.docker-compose.prod.yml.tmp
+              rm -f /tmp/docker-compose.prod.yml
               exit 1
             fi
             echo "✓ docker-compose.prod.yml válido"
@@ -136,7 +136,7 @@ jobs:
 
             echo ""
             echo "[3] Atualizando docker-compose.prod.yml..."
-            mv /tmp/.docker-compose.prod.yml.tmp docker-compose.prod.yml
+            mv /tmp/docker-compose.prod.yml docker-compose.prod.yml
             echo "✓ docker-compose.prod.yml atualizado com sucesso"
 
             echo ""
