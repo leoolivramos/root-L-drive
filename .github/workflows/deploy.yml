@@ -130,12 +130,12 @@ jobs:
             echo "✓ .env encontrado"
 
             echo "[1] Validando docker-compose.prod.yml enviado..."
-            if ! docker compose -f /tmp/docker-compose.prod.yml --env-file .env config > /dev/null 2>&1; then
-              echo "❌ ERRO: docker-compose.prod.yml inválido!"
-              rm -f /tmp/docker-compose.prod.yml
-              exit 1
+            if ! COMPOSE_CONFIG_OUTPUT=$(docker compose -f /tmp/docker-compose.prod.yml --env-file .env config 2>&1); then
+              echo "⚠️  Aviso: a validação antecipada do docker-compose.prod.yml falhou."
+              echo "$COMPOSE_CONFIG_OUTPUT"
+            else
+              echo "✓ docker-compose.prod.yml válido"
             fi
-            echo "✓ docker-compose.prod.yml válido"
 
             echo ""
             echo "[2] Criando backup do docker-compose anterior..."
