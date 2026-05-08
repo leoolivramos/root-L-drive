@@ -61,9 +61,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     env:
       REGISTRY: docker.io
+      DOCKER_USER: ${{ secrets.DOCKER_REGISTRY_USER }}
       IMAGE_BACKEND: ${{ secrets.DOCKER_REGISTRY_USER }}/private-driver-backend
       IMAGE_FRONTEND: ${{ secrets.DOCKER_REGISTRY_USER }}/private-driver-frontend
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -119,6 +120,15 @@ jobs:
             DEPLOY_DIR="${{ secrets.DEPLOY_DIRECTORY }}"
             cd "$DEPLOY_DIR"
 
+            export DOCKER_USER="${{ secrets.DOCKER_REGISTRY_USER }}"
+
+            echo "[0] Validando arquivo .env do servidor..."
+            if [ ! -f .env ]; then
+              echo "ERRO: .env não encontrado no servidor"
+              exit 1
+            fi
+            echo "✓ .env encontrado"
+
             echo "[1] Validando docker-compose.prod.yml enviado..."
             if ! docker compose -f /tmp/docker-compose.prod.yml --env-file .env config > /dev/null 2>&1; then
               echo "❌ ERRO: docker-compose.prod.yml inválido!"
@@ -140,31 +150,23 @@ jobs:
             echo "✓ docker-compose.prod.yml atualizado com sucesso"
 
             echo ""
-            echo "[4] Validando .env..."
-            if [ ! -f .env ]; then
-              echo "ERRO: .env não encontrado no servidor"
-              exit 1
-            fi
-            echo "✓ .env encontrado"
-
-            echo ""
-            echo "[5] Puxando imagens Docker do Hub..."
+            echo "[4] Puxando imagens Docker do Hub..."
             docker pull ${{ env.IMAGE_BACKEND }}:latest
             docker pull ${{ env.IMAGE_FRONTEND }}:latest
             echo "✓ Imagens puxadas com sucesso"
 
             echo ""
-            echo "[6] Parando containers antigos..."
+            echo "[5] Parando containers antigos..."
             docker compose -f docker-compose.prod.yml down --remove-orphans || true
             echo "✓ Containers parados"
 
             echo ""
-            echo "[7] Iniciando novos containers..."
+            echo "[6] Iniciando novos containers..."
             docker compose -f docker-compose.prod.yml up -d
             echo "✓ Containers iniciados"
 
             echo ""
-            echo "[8] Aguardando serviços ficarem prontos (60s)..."
+            echo "[7] Aguardando serviços ficarem prontos (60s)..."
             WAIT_COUNT=0
             MAX_WAIT=60
             while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
@@ -178,11 +180,11 @@ jobs:
             done
 
             echo ""
-            echo "[9] Verificando status dos containers..."
+            echo "[8] Verificando status dos containers..."
             docker ps --filter "name=private-drive"
 
             echo ""
-            echo "[10] Verificando conectividade da API..."
+            echo "[9] Verificando conectividade da API..."
             API_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/health || echo "000")
             if [ "$API_HEALTH" = "200" ]; then
               echo "✓ API respondendo normalmente (HTTP 200)"
@@ -201,11 +203,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.commits.createComment({
+            github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `**Deploy bem-sucedido!**\n\nCommit: ${context.sha.substring(0, 7)}\nBranch: ${context.ref.split('/').pop()}\n\n🚀 Aplicação em produção!`
+              sha: context.sha,
+              state: 'success',
+              context: 'production-deploy',
+              description: `Deploy bem-sucedido (${context.ref.split('/').pop()})`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
 
       - name: Deployment Failed
@@ -213,9 +218,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.commits.createComment({
+            github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: `**Deploy falhou e foi feito rollback!**\n\nCommit: ${context.sha.substring(0, 7)}\n\nVerifique os logs do GitHub Actions para detalhes.`
+              sha: context.sha,
+              state: 'failure',
+              context: 'production-deploy',
+              description: 'Deploy falhou e o rollback foi acionado',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
