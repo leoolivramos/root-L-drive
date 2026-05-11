@@ -166,12 +166,12 @@ jobs:
             echo "✓ Containers iniciados"
 
             echo ""
-            echo "[7] Aguardando serviços ficarem prontos (60s)..."
+            echo "[7] Aguardando a API ficar pronta (120s)..."
             WAIT_COUNT=0
-            MAX_WAIT=60
+            MAX_WAIT=120
             while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-              if docker compose -f docker-compose.prod.yml ps | grep -q "healthy"; then
-                echo "✓ Pelo menos um serviço está healthy"
+              if curl -sf http://localhost:8000/health >/dev/null; then
+                echo "✓ API respondeu com sucesso"
                 break
               fi
               WAIT_COUNT=$((WAIT_COUNT + 5))
@@ -185,7 +185,7 @@ jobs:
 
             echo ""
             echo "[9] Verificando conectividade da API..."
-            API_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/health || echo "000")
+            API_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || echo "000")
             if [ "$API_HEALTH" = "200" ]; then
               echo "✓ API respondendo normalmente (HTTP 200)"
             else
